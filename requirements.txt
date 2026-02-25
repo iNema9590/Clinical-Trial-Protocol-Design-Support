@@ -1,0 +1,24 @@
+# Core
+pdfplumber
+python-dotenv
+pandas
+# Embeddings & vector store
+sentence-transformers
+faiss-gpu
+numpy<2
+
+# LangChain & agents
+langchain
+langchain-community
+langchain-core
+
+# Hugging Face Inference API
+huggingface-hub
+requests
+
+# Structured outputs
+pydantic
+
+# Notebook
+jupyter
+ipykernel
