@@ -1,61 +1,89 @@
+import json
 from llm import generate
+from schemas import ObjectivesByCategory, EligibilityCriteria
 
+def extract_objectives(content: str) -> ObjectivesByCategory:
+    """
+    Extract study objectives and endpoints as a validated ObjectivesByCategory schema.
+    """
+    prompt = f"""You are a clinical trial protocol analysis expert.
 
-def extract_objectives(content: str) -> str:
+Your task is to extract ALL study objectives and ALL endpoints from the protocol text below.
 
-    prompt = f"""
-You are a clinical trial protocol analysis expert.
+For EACH objective, provide:
+- objective: The exact objective text from the protocol
+- endpoints: List of endpoints for this objective
 
-Your task is to extract ALL study objectives and ALL endpoints described in the protocol text below.
+Categorize objectives as:
+- primary: Primary study objectives
+- secondary: Secondary objectives
+- exploratory: Exploratory objectives  
+- other: Objectives that don't fit above categories (or empty list)
 
-Carefully identify:
+Rules:
+- Preserve exact wording from the protocol
+- Do NOT invent objectives or endpoints
+- Each objective must have at least one endpoint
+- If a section has no objectives of that type, use an empty list []
 
-1. Primary objectives
-2. Secondary objectives
-3. Exploratory objectives (if any)
-
-For each objective, extract:
-- The objective statement (as written)
-- The corresponding endpoint(s)
-- Whether the endpoint is primary, secondary, or exploratory
-- Any time frame associated with the endpoint
-- Any population specification (e.g., ITT, per-protocol, safety population)
-
-Important instructions:
-- Objectives and endpoints may appear in both narrative text and tables.
-- Endpoints may be described as outcome measures.
-- Include efficacy and safety endpoints.
-- Do NOT invent information.
-- If something is not explicitly stated, do not infer it.
-- Preserve original wording as much as possible.
-
-You MUST return your response as valid JSON ONLY. Do not include any text before or after the JSON.
-
-Use the following JSON structure:
+Return ONLY this JSON structure (lowercase field names):
 {{
-  "primary_objectives": [
-    {{
-      "objective": "objective text",
-      "endpoints": ["endpoint 1", "endpoint 2"],
-      "time_frame": "time frame if stated",
-      "population": "population if stated"
-    }}
+  "primary": [
+    {{"objective": "text", "endpoints": ["ep1", "ep2"]}}
   ],
-  "secondary_objectives": [
-    {{
-      "objective": "objective text",
-      "endpoints": ["endpoint 1"],
-      "time_frame": "time frame if stated",
-      "population": "population if stated"
-    }}
+  "secondary": [
+    {{"objective": "text", "endpoints": ["ep1"]}}
   ],
-  "exploratory_objectives": [
-    {{
-      "objective": "objective text",
-      "endpoints": ["endpoint 1"],
-      "time_frame": "time frame if stated",
-      "population": "population if stated"
-    }}
+  "exploratory": [],
+  "other": []
+}}
+
+Protocol text:
+\"\"\"
+{content}
+\"\"\"
+
+Output ONLY valid JSON. Do not include explanations or commentary.
+"""
+
+    output = generate(prompt)
+    # parsed = json.loads(output.strip())
+    # validated = ObjectivesByCategory(**parsed)
+    return output.strip()
+
+
+def extract_eligibility(content: str) -> EligibilityCriteria:
+    """
+    Extract inclusion and exclusion criteria as validated EligibilityCriteria schema.
+    """
+    prompt = f"""You are a clinical trial protocol analysis expert.
+
+Your task is to extract ALL inclusion and ALL exclusion criteria from the protocol text below.
+
+For each criterion:
+- Extract the exact text from the protocol
+- Preserve original wording
+- Do NOT merge or paraphrase criteria
+
+Categorize as:
+- inclusion: All inclusion criteria (or empty list)
+- exclusion: All exclusion criteria (or empty list)
+
+Rules:
+- Each criterion is a separate list item
+- Do NOT invent criteria
+- If a section lacks criteria, use empty list []
+- Preserve exact wording from the protocol
+
+Return ONLY this JSON structure (lowercase field names):
+{{
+  "inclusion": [
+    "criterion 1",
+    "criterion 2"
+  ],
+  "exclusion": [
+    "criterion 1",
+    "criterion 2"
   ]
 }}
 
@@ -64,118 +92,46 @@ Protocol text:
 {content}
 \"\"\"
 
-Return ONLY valid JSON:
+Output ONLY valid JSON. Do not include explanations or commentary.
 """
 
     output = generate(prompt)
-    return output.strip()
-
-
-def extract_eligibility(content: str) -> str:
-    """
-    Extract inclusion and exclusion criteria as structured JSON.
-    """
-    prompt = f"""
-    You are a clinical trial protocol analysis expert.
-
-    Your task is to extract ALL inclusion criteria and ALL exclusion criteria from the protocol text below.
-
-    Carefully identify:
-
-    • Every inclusion criterion
-    • Every exclusion criterion
-
-    Important instructions:
-
-    - Criteria are usually presented as numbered or bulleted lists.
-    - Preserve the original wording as much as possible.
-    - Do NOT summarize or paraphrase.
-    - Do NOT merge multiple criteria into one.
-    - Do NOT invent or infer criteria that are not explicitly stated.
-    - If inclusion and exclusion criteria appear in the same section, separate them correctly.
-    - If criteria are divided into subsections (e.g., general inclusion, COVID-specific exclusion), preserve them under the correct category.
-
-    You MUST return your response as valid JSON ONLY. Do not include any text before or after the JSON.
-
-    Use the following JSON structure:
-    {{
-      "inclusion_criteria": [
-        "criterion 1",
-        "criterion 2",
-        "criterion 3"
-      ],
-      "exclusion_criteria": [
-        "criterion 1",
-        "criterion 2",
-        "criterion 3"
-      ]
-    }}
-
-    Protocol text:
-    \"\"\"
-    {content}
-    \"\"\"
-
-    Return ONLY valid JSON:
-"""
-
-    output = generate(prompt)
-    return output.strip()
+    parsed = json.loads(output.strip())
+    validated = EligibilityCriteria(**parsed)
+    return validated
 
 def extract_soa(content: str) -> str:
 
     prompt = f"""
-        You are a clinical trial protocol analysis expert.
+You are a clinical trial protocol analysis expert.
 
-        Your task is to extract and reconstruct the full Schedule of Activities (SoA) from the protocol text below.
+Your task is to extract ALL Schedule of Activities (SoA) tables from the protocol text below.
 
-        The Schedule of Activities describes:
+Strict Instructions:
 
-        • Study visits (e.g., Screening, Day 1, Day 29, Follow-up, Illness Visit, etc.)
-        • Visit timing and visit windows (e.g., ±3 days)
-        • Procedures and assessments performed at each visit
-        • Dosing or intervention administration timepoints
-        • Sample collection timepoints (e.g., blood draws, swabs)
+1. Extract ONLY structured tables.
+2. Output MUST contain tables in valid Markdown table format.
+3. Do NOT include any explanations, commentary, or text outside the tables.
+4. If multiple SoA tables exist, output each table separately.
+5. Preserve original column headers exactly as written.
+6. Preserve visit names exactly as written.
+7. Preserve procedure names exactly as written.
+8. Do NOT summarize or restructure unless formatting is broken.
+9. If no SoA table is present, output: NO_SOA_FOUND
 
-        Important instructions:
+Valid Markdown table example:
 
-        - The SoA is usually presented as one or more tables.
-        - Carefully reconstruct the visit schedule in a structured and readable format.
-        - Preserve visit names exactly as written.
-        - Include visit timing (study day, week, month, and window if provided).
-        - For each visit, list all procedures performed at that visit.
-        - If procedures are marked with symbols (e.g., X, ✓), interpret them as “performed”.
-        - Do NOT summarize.
-        - Do NOT omit visits.
-        - Do NOT invent visits or procedures not explicitly shown.
+| Procedure | Screening | Day 1 | Day 29 |
+|-----------|------------|-------|--------|
+| Blood Draw | X |  | X |
 
-        You MUST return your response as valid JSON ONLY. Do not include any text before or after the JSON.
+Protocol Text:
+\"\"\"
+{content}
+\"\"\"
 
-        Use the following JSON structure:
-        {{
-          \"schedule_of_activities\": [
-            {{
-              \"visit_name\": \"Visit Name\",
-              \"timing\": \"timing description\",
-              \"window\": \"window if stated\",
-              \"procedures\": [
-                \"procedure 1\",
-                \"procedure 2\",
-                \"procedure 3\"
-              ]
-            }}
-          ]
-        }}
-
-        If multiple SoA tables exist (e.g., main study, illness visits, safety follow-up), include all visits in the array.
-
-        Protocol text:
-        \"\"\"
-        {content}
-        \"\"\"
-
-        Return ONLY valid JSON:
-        """
+Return only Markdown tables:
+"""
     
     output = generate(prompt)
     return output.strip()

@@ -1,63 +1,88 @@
-import re
-from typing import Dict, List
+import os
+from typing import Dict, List, Optional
 
-import torch
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from llm import generate
 from parser import process_pdf
-from section_classifier import embed
 from section_splitter import split_into_sections
 
-
-def _chunk_text(text: str, max_chars: int, overlap: int) -> List[str]:
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    if not cleaned:
-        return []
-
-    chunks = []
-    start = 0
-    length = len(cleaned)
-
-    while start < length:
-        end = min(length, start + max_chars)
-        chunk = cleaned[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end == length:
-            break
-        start = max(0, end - overlap)
-
-    return chunks
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def _embed_in_batches(texts: List[str], batch_size: int) -> torch.Tensor:
-    embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        embeddings.append(embed(batch))
-    return torch.cat(embeddings, dim=0) if embeddings else torch.empty((0, 0))
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+
+
+def _build_documents_from_sections(
+    sections: Dict[str, str],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> List[Document]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    documents: List[Document] = []
+    for title, content in sections.items():
+        chunks = splitter.split_text(content)
+        for i, chunk in enumerate(chunks):
+            documents.append(
+                Document(
+                    page_content=chunk,
+                    metadata={"title": title, "chunk": i},
+                )
+            )
+    return documents
+
+
+def _has_faiss_index(persist_dir: str) -> bool:
+    return os.path.exists(os.path.join(persist_dir, "index.faiss"))
+
+
+def _documents_from_store(store: FAISS) -> List[Dict[str, str]]:
+    documents = []
+    for doc in store.docstore._dict.values():
+        documents.append(
+            {
+                "title": doc.metadata.get("title", ""),
+                "text": doc.page_content,
+            }
+        )
+    return documents
 
 
 class RAGIndex:
-    def __init__(self, documents: List[Dict[str, str]], embeddings: torch.Tensor) -> None:
+    def __init__(self, store: FAISS, documents: List[Dict[str, str]]) -> None:
+        self.store = store
         self.documents = documents
-        self.embeddings = embeddings
+
+    def save(self, persist_dir: str) -> None:
+        self.store.save_local(persist_dir)
+
+    @classmethod
+    def load(cls, persist_dir: str, embeddings: HuggingFaceEmbeddings) -> "RAGIndex":
+        store = FAISS.load_local(
+            persist_dir,
+            embeddings,
+            allow_dangerous_deserialization=True,
+        )
+        documents = _documents_from_store(store)
+        return cls(store, documents)
 
     def query(self, question: str, top_k: int = 5) -> List[Dict[str, str]]:
-        if not self.documents:
-            return []
-
-        query_embedding = embed([question])[0]
-        scores = torch.matmul(self.embeddings, query_embedding)
-        top_scores, top_indices = torch.topk(scores, k=min(top_k, len(self.documents)))
-
+        hits = self.store.similarity_search_with_score(question, k=top_k)
         results = []
-        for score, idx in zip(top_scores.tolist(), top_indices.tolist()):
-            doc = self.documents[idx]
+        for doc, score in hits:
             results.append(
                 {
-                    "title": doc["title"],
-                    "text": doc["text"],
+                    "title": doc.metadata.get("title", ""),
+                    "text": doc.page_content,
                     "score": float(score),
                 }
             )
@@ -79,49 +104,58 @@ class RAGIndex:
 
         context = "\n\n".join(context_blocks)
         prompt = f"""
-You are a clinical trial protocol analysis expert.
-Use ONLY the context below to answer the question. If the answer is not in the context, say \"Not found in provided context.\"
+            You are a clinical trial protocol analysis expert.
+            Use ONLY the context below to answer the question. If the answer is not in the context, say \"Not found in provided context.\"
 
-Context:
-\"\"\"
-{context}
-\"\"\"
+            Context:
+            \"\"\"
+            {context}
+            \"\"\"
 
-Question: {question}
+            Question: {question}
 
-Answer:
-"""
+            Answer:
+            """
         return generate(prompt).strip()
 
 
 def build_rag_index_from_sections(
     sections: Dict[str, str],
-    chunk_size: int = 1200,
+    chunk_size: int = 2200,
     chunk_overlap: int = 200,
-    batch_size: int = 16,
+    persist_dir: Optional[str] = "../data/rag_index",
+    use_existing: bool = True,
 ) -> RAGIndex:
-    documents = []
-    for title, content in sections.items():
-        chunks = _chunk_text(content, max_chars=chunk_size, overlap=chunk_overlap)
-        for i, chunk in enumerate(chunks):
-            documents.append({"id": f"{title}::chunk{i}", "title": title, "text": chunk})
+    embeddings = _get_embeddings()
 
-    embeddings = _embed_in_batches([doc["text"] for doc in documents], batch_size)
-    return RAGIndex(documents, embeddings)
+    if persist_dir and use_existing and _has_faiss_index(persist_dir):
+        return RAGIndex.load(persist_dir, embeddings)
+
+    documents = _build_documents_from_sections(sections, chunk_size, chunk_overlap)
+    store = FAISS.from_documents(documents, embeddings)
+    rag_index = RAGIndex(store, _documents_from_store(store))
+
+    if persist_dir:
+        os.makedirs(persist_dir, exist_ok=True)
+        rag_index.save(persist_dir)
+
+    return rag_index
 
 
 def build_rag_index_from_text(
     text: str,
     chunk_size: int = 1200,
     chunk_overlap: int = 200,
-    batch_size: int = 16,
+    persist_dir: Optional[str] = "../data/rag_index",
+    use_existing: bool = True,
 ) -> RAGIndex:
     sections = split_into_sections(text)
     return build_rag_index_from_sections(
         sections,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        batch_size=batch_size,
+        persist_dir=persist_dir,
+        use_existing=use_existing,
     )
 
 
@@ -129,12 +163,14 @@ def build_rag_index_from_pdf(
     pdf_path: str,
     chunk_size: int = 1200,
     chunk_overlap: int = 200,
-    batch_size: int = 16,
+    persist_dir: Optional[str] = "../data/rag_index",
+    use_existing: bool = True,
 ) -> RAGIndex:
     text = process_pdf(pdf_path)
     return build_rag_index_from_text(
         text,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        batch_size=batch_size,
+        persist_dir=persist_dir,
+        use_existing=use_existing,
     )
