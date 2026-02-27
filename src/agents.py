@@ -126,11 +126,30 @@ Your task is to extract ALL Schedule of Activities (SoA) tables from the protoco
 
 Strict Instructions:
 
-1. Extract ONLY structured JSON tables.
-2. Do NOT include any explanations, commentary, or text outside the JSON.
-3. If multiple SoA tables exist, output JSON for each table separately.
-4. Do NOT summarize or restructure unless formatting is broken.
-5. Do NOT add references to sections or page numbers.
+1. Each table must be processed independently.
+2. Do NOT merge visits from different tables.
+3. Preserve table separation.
+6. Output MUST be ONE valid JSON object.
+7. Do NOT output multiple root JSON objects.
+8. Do NOT include commentary.
+
+Return something like this structure:
+
+{{
+  "tables": [
+    {{
+      "table_title": "Table title if present or null",
+      "visits": [
+        {{
+          "visit_name": "Visit Name",
+          "study_day": "Day X or null",
+          "window": "±X days or null",
+          "procedures": ["Procedure A", "Procedure B"]
+        }}
+      ]
+    }}
+  ]
+}}
 
 The JSON structure for each SoA table should be inferred from the table content.
 
@@ -143,8 +162,8 @@ Return only Markdown tables:
 """
     
     output = generate(prompt)
-    parsed = extract_json_from_llm_output(output)
-    return parsed
+    # parsed = extract_json_from_llm_output(output)
+    return output.strip()
 
 
 def extract_visit_definitions(content: str) -> VisitDefinitionsOutput:

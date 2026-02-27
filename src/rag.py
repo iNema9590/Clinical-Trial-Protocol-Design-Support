@@ -1,284 +1,195 @@
-import os
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 
-from langchain_core.documents import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from rank_bm25 import BM25Okapi
+from langchain_core.documents import Document
+from structure_chunker import build_structured_chunks
+from transformers import AutoTokenizer
 
 from llm import generate
 
 
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 
-
-# ============================================================
-# Embeddings
-# ============================================================
-
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
-
-
-# ============================================================
-# Regex-Based Section Splitting (Structure-Aware)
-# ============================================================
-
-SECTION_HEADER_PATTERN = re.compile(
-    r"""
-    ^
-    (?:
-        \d+(\.\d+)*      # numbered headers like 1 or 1.2 or 3.4.5
-        \s+
-    )?
-    ([A-Z][A-Z\s\-(),]{4,})   # ALL CAPS section titles
-    $
-    """,
-    re.VERBOSE | re.MULTILINE,
+TABLE_BLOCK_PATTERN = re.compile(
+    r"(\|.+?\|\n\|[-:\s|]+\|(?:\n\|.*?\|)+)",
+    re.DOTALL
 )
 
 
-def split_into_sections_regex(text: str) -> Dict[str, str]:
-    """
-    Splits protocol into sections using regex detection of headers.
-    Works with numbered and ALL CAPS section headers.
-    """
-    matches = list(SECTION_HEADER_PATTERN.finditer(text))
+def split_text_and_tables(text):
+    parts = TABLE_BLOCK_PATTERN.split(text)
+    blocks = []
 
-    if not matches:
-        return {"full_document": text}
+    for part in parts:
+        if not part.strip():
+            continue
 
-    sections = {}
-    for i, match in enumerate(matches):
-        start = match.end()
-        title = match.group(0).strip()
+        if TABLE_BLOCK_PATTERN.match(part):
+            blocks.append({"type": "table", "content": part.strip()})
+        else:
+            blocks.append({"type": "text", "content": part.strip()})
 
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        content = text[start:end].strip()
-
-        sections[title] = content
-
-    return sections
+    return blocks
 
 
-# ============================================================
-# Structure-Aware Chunking
-# ============================================================
+def build_qa_documents(structured_chunks, max_tokens=800, overlap=150):
 
-def _build_documents_from_sections(
-    sections: Dict[str, str],
-    chunk_size: int = 800,
-    chunk_overlap: int = 150,
-) -> List[Document]:
+    documents = []
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=[
-            "\n- ",
-            "\n• ",
-            "\n\n",
-            "\n",
-            ". ",
-        ],
-    )
+    for chunk in structured_chunks:
+        blocks = split_text_and_tables(chunk.content)
 
-    documents: List[Document] = []
+        for block in blocks:
 
-    for title, content in sections.items():
+            # TABLE = atomic
+            if block["type"] == "table":
+                content = f"""
+Section Path: {chunk.full_title}
+Section Number: {chunk.section_id}
 
-        chunks = splitter.split_text(content)
-
-        for i, chunk in enumerate(chunks):
-            documents.append(
-                Document(
-                    page_content=chunk,
-                    metadata={
-                        "section_title": title,
-                        "chunk_id": i,
-                    },
+{block["content"]}
+"""
+                documents.append(
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "section_id": chunk.section_id,
+                            "full_title": chunk.full_title,
+                            "is_table": True
+                        }
+                    )
                 )
-            )
+                continue
+
+            # TEXT = adaptive sliding window
+            tokens = tokenizer.encode(block["content"])
+
+            if len(tokens) <= max_tokens:
+                window_text = block["content"]
+
+                content = f"""
+Section Path: {chunk.full_title}
+Section Number: {chunk.section_id}
+
+{window_text}
+"""
+
+                documents.append(
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "section_id": chunk.section_id,
+                            "full_title": chunk.full_title,
+                            "is_table": False
+                        }
+                    )
+                )
+            else:
+                start = 0
+                while start < len(tokens):
+                    end = start + max_tokens
+                    window_tokens = tokens[start:end]
+                    window_text = tokenizer.decode(window_tokens)
+
+                    content = f"""
+Section Path: {chunk.full_title}
+Section Number: {chunk.section_id}
+
+{window_text}
+"""
+
+                    documents.append(
+                        Document(
+                            page_content=content,
+                            metadata={
+                                "section_id": chunk.section_id,
+                                "full_title": chunk.full_title,
+                                "is_table": False
+                            }
+                        )
+                    )
+
+                    start += max_tokens - overlap
 
     return documents
 
+def build_faiss_index(documents):
 
-# ============================================================
-# Hybrid RAG Index
-# ============================================================
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+    encode_kwargs={"normalize_embeddings": True}
+    )
 
-class RAGIndex:
-    def __init__(self, store: FAISS, documents: List[Document]) -> None:
-        self.store = store
-        self.documents = documents
+    vectorstore = FAISS.from_documents(
+        documents,
+        embeddings
+    )
 
-        # Prepare BM25 corpus
-        self.corpus_texts = [doc.page_content for doc in documents]
-        self.tokenized_corpus = [text.split() for text in self.corpus_texts]
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
+    return vectorstore
 
-    # ----------------------------
-    # Save / Load
-    # ----------------------------
 
-    def save(self, persist_dir: str) -> None:
-        self.store.save_local(persist_dir)
+class ClinicalProtocolRAG:
 
-    @classmethod
-    def load(cls, persist_dir: str, embeddings) -> "RAGIndex":
-        store = FAISS.load_local(
-            persist_dir,
-            embeddings,
-            allow_dangerous_deserialization=True,
+    def __init__(self, raw_text: str):
+
+        print("Building structured chunks...")
+        structured_chunks = build_structured_chunks(raw_text)
+
+        print("Building QA documents...")
+        documents = build_qa_documents(structured_chunks)
+
+        print("Building FAISS index...")
+        self.vectorstore = build_faiss_index(documents)
+
+    def retrieve(self, question: str, k: int = 6):
+
+        retriever = self.vectorstore.as_retriever(
+            search_kwargs={"k": k}
         )
-        documents = list(store.docstore._dict.values())
-        return cls(store, documents)
 
-    # ----------------------------
-    # Hybrid Retrieval
-    # ----------------------------
+        docs = retriever.invoke(question)
 
-    def hybrid_search(self, question: str, top_k: int = 8) -> List[Document]:
-        # Dense retrieval
-        dense_hits = self.store.similarity_search_with_score(question, k=top_k)
-        dense_docs = [doc for doc, _ in dense_hits]
+        return docs
 
-        # BM25 retrieval
-        tokenized_query = question.split()
-        bm25_scores = self.bm25.get_scores(tokenized_query)
+    def answer(self, question: str, k: int = 6, conversation_history: Optional[List[Dict[str, str]]] = None):
 
-        top_bm25_indices = sorted(
-            range(len(bm25_scores)),
-            key=lambda i: bm25_scores[i],
-            reverse=True,
-        )[:top_k]
+        docs = self.retrieve(question, k)
 
-        bm25_docs = [self.documents[i] for i in top_bm25_indices]
+        context = "\n\n".join([doc.page_content for doc in docs])
 
-        # Reciprocal Rank Fusion (RRF) reranking
-        rrf_scores = {}
-        k_param = 60
+        # Build conversation history string
+        history_str = ""
+        if conversation_history:
+            history_lines = []
+            for msg in conversation_history:
+                role = msg.get("role", "unknown").capitalize()
+                content = msg.get("content", "")
+                history_lines.append(f"{role}: {content}")
+            history_str = "\n".join(history_lines) + "\n\n"
 
-        # Score dense retrieval results
-        for rank, doc in enumerate(dense_docs, start=1):
-            rrf_scores[doc.page_content] = rrf_scores.get(doc.page_content, 0) + 1 / (k_param + rank)
+        prompt = f"""You are a clinical trial protocol expert.
 
-        # Score BM25 results
-        for rank, doc in enumerate(bm25_docs, start=1):
-            rrf_scores[doc.page_content] = rrf_scores.get(doc.page_content, 0) + 1 / (k_param + rank)
+Answer the question using ONLY the provided protocol context.
+If the answer is not explicitly stated, say: "Not specified in the protocol."
+Do not reference section numbers or anything else.
+Be gentle and concise in your answer, as if you were talking to a non-expert.
 
-        # Get unique documents and sort by RRF score
-        unique_docs = {}
-        for doc in dense_docs + bm25_docs:
-            if doc.page_content not in unique_docs:
-                unique_docs[doc.page_content] = doc
+==================== CONVERSATION HISTORY ====================
+{history_str}
+==================== PROTOCOL CONTEXT ====================
 
-        ranked = sorted(
-            unique_docs.items(),
-            key=lambda x: rrf_scores[x[0]],
-            reverse=True,
-        )[:top_k]
-
-        return [doc for _, doc in ranked]
-
-    # ----------------------------
-    # Answer
-    # ----------------------------
-
-    def answer(
-        self,
-        question: str,
-        top_k: int = 8,
-        max_context_chars: int = 5000,
-    ) -> str:
-
-        docs = self.hybrid_search(question, top_k=top_k)
-
-        if not docs:
-            return "Not found in provided context.", ""
-
-        context_blocks = []
-        total_chars = 0
-
-        for doc in docs:
-            block = f"[{doc.metadata.get('section_title','')}]\n{doc.page_content}"
-
-            if total_chars + len(block) > max_context_chars:
-                break
-
-            context_blocks.append(block)
-            total_chars += len(block)
-
-        context = "\n\n".join(context_blocks)
-
-        prompt = f"""
-You are a clinical trial protocol expert.
-
-Answer the question STRICTLY using the context below.
-
-Do NOT speculate, if the information is not there say it is not given in the context.
-Do NOT reference sections or page numbers, just answer based on the content provided.
-
-Context:
-\"\"\"
 {context}
-\"\"\"
+
+===========================================================
 
 Question: {question}
 
 Answer:
 """
 
-        return generate(prompt).strip(), context
+        response = generate(prompt)
 
-
-# ============================================================
-# Builder Functions
-# ============================================================
-
-def build_rag_index_from_text(
-    text: str,
-    persist_dir: Optional[str] = "../data/rag_index",
-    use_existing: bool = True,
-) -> RAGIndex:
-
-    embeddings = _get_embeddings()
-
-    if persist_dir and use_existing and os.path.exists(
-        os.path.join(persist_dir, "index.faiss")
-    ):
-        return RAGIndex.load(persist_dir, embeddings)
-
-    sections = split_into_sections_regex(text)
-
-    documents = _build_documents_from_sections(sections)
-
-    store = FAISS.from_documents(documents, embeddings)
-
-    rag_index = RAGIndex(store, documents)
-
-    if persist_dir:
-        os.makedirs(persist_dir, exist_ok=True)
-        rag_index.save(persist_dir)
-
-    return rag_index
-
-
-def build_rag_index_from_pdf(
-    pdf_path: str,
-    persist_dir: Optional[str] = "../data/rag_index",
-    use_existing: bool = True,
-) -> RAGIndex:
-
-    from parser import process_pdf
-
-    text = process_pdf(pdf_path)
-
-    return build_rag_index_from_text(
-        text,
-        persist_dir=persist_dir,
-        use_existing=use_existing,
-    )
+        return response

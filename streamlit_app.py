@@ -1,20 +1,20 @@
-import io
 import os
 import sys
 import tempfile
-from typing import Optional, Tuple
+from typing import Optional
 
 import streamlit as st
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
-from rag import build_rag_index_from_pdf
+from parser import process_pdf
+from rag import ClinicalProtocolRAG
 
 
 st.set_page_config(page_title="Protocol RAG Chat", page_icon="💬", layout="wide")
 
 st.title("Protocol Chat (RAG)")
-st.caption("Upload a protocol PDF and chat with it using RAG.")
+st.caption("Upload a clinical trial protocol PDF and ask questions about it.")
 
 
 def _save_temp_pdf(file_bytes: bytes) -> str:
@@ -26,10 +26,11 @@ def _save_temp_pdf(file_bytes: bytes) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def _build_index(file_bytes: bytes):
+def _build_rag(file_bytes: bytes):
     pdf_path = _save_temp_pdf(file_bytes)
     try:
-        return build_rag_index_from_pdf(pdf_path, persist_dir=None, use_existing=False)
+        parsed_text = process_pdf(pdf_path)
+        return ClinicalProtocolRAG(parsed_text)
     finally:
         try:
             os.remove(pdf_path)
@@ -37,26 +38,25 @@ def _build_index(file_bytes: bytes):
             pass
 
 
-def _get_index(file_bytes: Optional[bytes]):
+def _get_rag(file_bytes: Optional[bytes]):
     if not file_bytes:
         return None
-    return _build_index(file_bytes)
+    return _build_rag(file_bytes)
 
 
 with st.sidebar:
     st.header("Document")
     uploaded_file = st.file_uploader("Upload protocol PDF", type=["pdf"])
-    st.markdown("---")
-    top_k = st.slider("Top K chunks", min_value=2, max_value=12, value=6, step=1)
-    show_context = st.toggle("Show retrieved context", value=False)
+    if uploaded_file:
+        st.caption(f"Loaded: {uploaded_file.name}")
 
-index = None
+rag = None
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
-    with st.spinner("Building RAG index..."):
-        index = _get_index(file_bytes)
+    with st.spinner("Processing PDF and building RAG index..."):
+        rag = _get_rag(file_bytes)
 else:
-    st.info("Upload a PDF to begin.")
+    st.info("📄 Upload a clinical trial protocol PDF to begin chatting.")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -65,7 +65,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if index is not None:
+if rag is not None:
     user_input = st.chat_input("Ask a question about the protocol")
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
@@ -73,11 +73,8 @@ if index is not None:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                answer, context = index.answer(user_input, top_k=top_k)
+            with st.spinner("Searching and generating answer..."):
+                answer = rag.answer(user_input, conversation_history=st.session_state.messages[:-1])
             st.markdown(answer)
-            if show_context and context:
-                with st.expander("Retrieved context"):
-                    st.text(context)
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
