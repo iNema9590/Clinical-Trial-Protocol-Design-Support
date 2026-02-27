@@ -57,6 +57,12 @@ TARGET_QUERIES = {
     illness visit safety follow-up early termination visit
     visit window timing of visits study flow
     conditional visits triggered visits
+    """,
+    "key_assessments": """
+    assessments procedures evaluations key assessments
+    clinical assessments laboratory tests physical examination
+    vital signs ECG imaging blood samples
+    safety assessments efficacy assessments
     """
 }
 

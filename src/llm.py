@@ -14,12 +14,19 @@ MODEL_NAME = "gemini-2.0-flash"  # Use "gemini-2.0-flash" or "gemini-1.5-pro" fo
 IS_GEMINI = MODEL_NAME.startswith("gemini-")
 
 if IS_GEMINI:
-       
+    creds_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_env:
+        creds_path = creds_env
+    else:
+        creds_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "google-credentials.json")
+        )
+
     # Initialize Vertex AI
     vertexai.init(
         project="oag-ai",
         credentials=service_account.Credentials.from_service_account_file(
-            "../google-credentials.json"
+            creds_path
         ),
     )
     
@@ -35,7 +42,7 @@ else:
         device_map="cpu"
     )
 
-def generate(prompt, max_new_tokens=4096, temperature=0.1):
+def generate(prompt, max_new_tokens=4096, temperature=1):
     if IS_GEMINI:
         # Generate using Gemini
         response = model.generate_content(

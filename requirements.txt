@@ -6,6 +6,7 @@ pandas
 sentence-transformers
 faiss-gpu
 numpy<2
+rank-bm25
 
 # LangChain & agents
 langchain
@@ -23,3 +24,6 @@ pydantic
 # Notebook
 jupyter
 ipykernel
+
+# UI
+streamlit

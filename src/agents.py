@@ -1,6 +1,24 @@
 import json
+import re
 from llm import generate
-from schemas import ObjectivesByCategory, EligibilityCriteria
+from schemas import *
+
+def extract_json_from_llm_output(raw_output: str) -> dict:
+    """
+    Extracts JSON from LLM output that may be wrapped in ```json ... ``` fences.
+    """
+
+    # Remove markdown code fences if present
+    fenced_pattern = r"```(?:json)?\s*(.*?)\s*```"
+    match = re.search(fenced_pattern, raw_output, re.DOTALL)
+
+    if match:
+        json_str = match.group(1)
+    else:
+        json_str = raw_output.strip()
+
+    # Now parse
+    return json.loads(json_str)
 
 def extract_objectives(content: str) -> ObjectivesByCategory:
     """
@@ -34,8 +52,7 @@ Return ONLY this JSON structure (lowercase field names):
   "secondary": [
     {{"objective": "text", "endpoints": ["ep1"]}}
   ],
-  "exploratory": [],
-  "other": []
+  "exploratory": []
 }}
 
 Protocol text:
@@ -47,9 +64,9 @@ Output ONLY valid JSON. Do not include explanations or commentary.
 """
 
     output = generate(prompt)
-    # parsed = json.loads(output.strip())
-    # validated = ObjectivesByCategory(**parsed)
-    return output.strip()
+    parsed = extract_json_from_llm_output(output)
+    validated = ObjectivesByCategory(**parsed)
+    return validated
 
 
 def extract_eligibility(content: str) -> EligibilityCriteria:
@@ -96,7 +113,7 @@ Output ONLY valid JSON. Do not include explanations or commentary.
 """
 
     output = generate(prompt)
-    parsed = json.loads(output.strip())
+    parsed = extract_json_from_llm_output(output)
     validated = EligibilityCriteria(**parsed)
     return validated
 
@@ -109,21 +126,13 @@ Your task is to extract ALL Schedule of Activities (SoA) tables from the protoco
 
 Strict Instructions:
 
-1. Extract ONLY structured tables.
-2. Output MUST contain tables in valid Markdown table format.
-3. Do NOT include any explanations, commentary, or text outside the tables.
-4. If multiple SoA tables exist, output each table separately.
-5. Preserve original column headers exactly as written.
-6. Preserve visit names exactly as written.
-7. Preserve procedure names exactly as written.
-8. Do NOT summarize or restructure unless formatting is broken.
-9. If no SoA table is present, output: NO_SOA_FOUND
+1. Extract ONLY structured JSON tables.
+2. Do NOT include any explanations, commentary, or text outside the JSON.
+3. If multiple SoA tables exist, output JSON for each table separately.
+4. Do NOT summarize or restructure unless formatting is broken.
+5. Do NOT add references to sections or page numbers.
 
-Valid Markdown table example:
-
-| Procedure | Screening | Day 1 | Day 29 |
-|-----------|------------|-------|--------|
-| Blood Draw | X |  | X |
+The JSON structure for each SoA table should be inferred from the table content.
 
 Protocol Text:
 \"\"\"
@@ -134,50 +143,54 @@ Return only Markdown tables:
 """
     
     output = generate(prompt)
-    return output.strip()
+    parsed = extract_json_from_llm_output(output)
+    return parsed
 
 
-def extract_visit_definitions(content: str) -> str:
+def extract_visit_definitions(content: str) -> VisitDefinitionsOutput:
     """
-    Extract visit definitions and timing from protocol text as structured JSON.
+    Extract visit definitions and timing as structured JSON.
     """
+
     prompt = f"""
 You are a clinical trial protocol analysis expert.
 
-Your task is to extract and clearly describe all study visit definitions and visit timing rules from the protocol text below.
+Your task is to extract ALL study visit definitions and their timing rules from the protocol text below.
 
-Focus specifically on:
+Definition:
+A visit definition explains what a visit is and when it occurs.
+This includes screening visits, dosing visits, follow-up visits, illness visits, safety visits, and early termination visits.
 
-• The definition and purpose of each visit (e.g., Screening, Day 1, Day 29, Follow-up, Illness Visit, Safety Follow-up)
-• When each visit occurs (study day, week, month, etc.)
-• Visit windows (e.g., ±3 days)
-• Conditional or triggered visits (e.g., visits triggered by symptoms or positive test)
-• The sequence of visits (e.g., Day 1 followed by Day 29)
-• Remote vs on-site visits (if specified)
-• Early termination visits (if described)
+For EACH visit, extract:
 
-Important instructions:
+- name: The exact visit name as written in the protocol.
+- description: A brief description of the visit purpose or definition.
+- timing: When the visit occurs (e.g., Day 1, Week 4, within 28 days prior to randomization).
+- window: Visit window if explicitly stated (e.g., ±3 days). Otherwise null.
+- trigger: Trigger condition if the visit is conditional (e.g., symptom onset). Otherwise null.
 
-- This task is NOT about listing procedures (those belong to the Schedule of Activities).
-- Instead, describe how visits are defined and how timing is determined.
-- Preserve original wording where important.
-- Do NOT invent visit rules not explicitly stated.
-- If timing windows differ between visits, specify clearly.
-- If illness visits or safety follow-up visits are triggered by specific conditions, describe those triggers.
+Important Rules:
 
-You MUST return your response as valid JSON ONLY. Do not include any text before or after the JSON.
+1. This task is NOT about listing procedures (those belong to Schedule of Activities).
+2. Do NOT include procedures performed at the visit.
+3. Do NOT invent visits or timing rules.
+4. Preserve wording closely to the protocol when possible.
+5. If timing is not explicitly stated, set it to null.
+6. If window is not stated, set it to null.
+7. If trigger is not applicable, set it to null.
+8. Output MUST strictly follow the JSON structure below.
+9. Output ONLY valid JSON. No explanations or commentary.
 
-Use the following JSON structure:
+Return EXACTLY this structure:
+
 {{
-  "visit_definitions": [
+  "visits": [
     {{
-      "visit_name": "Visit Name",
-      "purpose": "purpose description",
-      "occurs_at": "timing description",
-      "visit_window": "window if stated",
-      "trigger": "trigger conditions if applicable",
-      "followed_by": "next visit if specified",
-      "visit_type": "on-site/remote if specified"
+      "name": "Visit Name",
+      "description": "Brief visit definition",
+      "timing": "When it occurs or null",
+      "window": "Visit window or null",
+      "trigger": "Trigger condition or null"
     }}
   ]
 }}
@@ -191,4 +204,87 @@ Return ONLY valid JSON:
 """
 
     output = generate(prompt)
-    return output.strip()
+    parsed = extract_json_from_llm_output(output)
+    validated = VisitDefinitionsOutput(**parsed)
+    return validated
+
+
+def extract_key_assessments(content: str) -> KeyAssessmentsOutput:
+    """
+    Extract key assessments and procedures as validated KeyAssessmentsOutput schema.
+    """
+
+    prompt = f"""
+You are a clinical trial protocol analysis expert.
+
+Your task is to extract all key assessments and their associated procedures from the protocol text below.
+
+Definitions:
+
+Assessment:
+A high-level evaluation defined in the protocol (e.g., Safety Assessment, Tumor Response Assessment, Laboratory Assessment).
+
+Procedure:
+A specific test, measurement, or action performed as part of an assessment.
+
+For EACH assessment, extract:
+
+- category: Category explicitly stated in the protocol (e.g., "Safety", "Efficacy", "Laboratory").
+  If no category is explicitly stated, infer the most appropriate category using a single word (e.g., "safety", "efficacy", "other").
+
+- name: The exact assessment name as written in the protocol.
+
+- description: A brief description of the assessment (1–3 sentences).
+
+- procedures: A list of procedures belonging to this assessment.
+
+For EACH procedure, extract:
+
+- name: The exact procedure name as written in the protocol.
+- description: A brief description (1–2 sentences).
+
+Important Rules:
+
+1. Preserve exact wording for names.
+2. Do NOT invent assessments.
+3. Do NOT invent procedures.
+4. Do NOT include visit timing or Schedule of Activities information.
+5. Do NOT group assessments by category at the top level.
+6. Return assessments as a LIST under the key "assessments".
+7. If no assessments are found, return:
+   {{
+     "assessments": []
+   }}
+8. Output MUST be valid JSON only.
+9. Do NOT include explanations or commentary.
+
+Return EXACTLY this JSON structure:
+
+{{
+  "assessments": [
+    {{
+      "category": "safety",
+      "name": "Assessment Name",
+      "description": "Brief description",
+      "procedures": [
+        {{
+          "name": "Procedure Name",
+          "description": "Brief description"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Protocol Text:
+\"\"\"
+{content}
+\"\"\"
+
+Return ONLY valid JSON:
+"""
+
+    output = generate(prompt)
+    parsed = extract_json_from_llm_output(output)
+    validated = KeyAssessmentsOutput(**parsed)
+    return validated

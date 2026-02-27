@@ -8,35 +8,131 @@ from langchain_core.runnables import RunnableLambda
 
 from agents import (
     extract_eligibility,
+    extract_key_assessments,
     extract_objectives,
     extract_soa,
     extract_visit_definitions,
 )
 from llm import generate
-from rag import build_rag_index_from_sections
+from rag import build_rag_index_from_text
 from section_classifier import TARGET_QUERIES, embed
 
 ROUTER_PROMPT = PromptTemplate.from_template(
-    """
-You are a routing assistant for clinical trial document intelligence.
-Choose the best tool for the question based on the tool descriptions below.
-Return JSON ONLY.
+"""
+You are a routing assistant for a clinical trial protocol intelligence system.
 
-Tools:
-- objectives: Use when the question is about study objectives or endpoints.
-- eligibility: Use when the question is about inclusion/exclusion criteria.
-- soa: Use when the question is about schedule of activities or procedures by visit.
-- visit_definitions: Use when the question is about visit definitions, timing, or visit windows.
-- rag: Use for any other question or when unsure.
+Your task is to select the SINGLE most appropriate tool to answer the user’s question.
 
-Question: {question}
+You must be precise and conservative. 
+If the question does not clearly match a specialized extraction tool, choose "rag".
 
-Return JSON with this structure:
+----------------------------------------
+TOOL DEFINITIONS
+----------------------------------------
+
+1) objectives
+Use ONLY when the question is about:
+- Study objectives (primary, secondary, exploratory)
+- Endpoints linked to objectives
+- Relationship between objectives and endpoints
+
+DO NOT use for:
+- Procedures
+- Visit timing
+- Schedule tables
+
+----------------------------------------
+
+2) eligibility
+Use ONLY when the question is about:
+- Inclusion criteria
+- Exclusion criteria
+- Participant eligibility rules
+
+----------------------------------------
+
+3) soa
+Use ONLY when the question is about:
+- Schedule of Activities tables
+- Procedures organized by visit
+- Visit-by-visit procedure matrices
+- Tabular schedule formats
+
+Important:
+This is about structured tables mapping procedures to visits.
+NOT about describing visits.
+
+----------------------------------------
+
+4) visit_definitions
+Use ONLY when the question is about:
+- Definitions of visits (Screening, Day 1, Follow-up, etc.)
+- Visit timing rules
+- Visit windows (± days)
+- Triggered visits
+- Sequence of visits
+
+Important:
+This is about how visits are defined and timed.
+NOT about procedures performed at visits.
+
+----------------------------------------
+
+5) key_assessments
+Use ONLY when the question is about:
+- Assessments (e.g., Safety Assessment, Tumor Assessment)
+- Procedures grouped under assessments
+- Evaluations and measurements
+
+Important:
+This is about assessment → procedure hierarchy.
+NOT about objectives.
+NOT about visit schedules.
+
+----------------------------------------
+
+6) rag
+Use when:
+- The question does not clearly match a tool above
+- The question spans multiple domains
+- The user asks for summary, explanation, or interpretation
+- You are uncertain
+
+When unsure → choose "rag".
+
+----------------------------------------
+
+DISAMBIGUATION RULES
+----------------------------------------
+
+If the question mentions:
+
+- "primary objective" → objectives
+- "endpoint" → objectives
+- "inclusion/exclusion" → eligibility
+- "schedule of activities" → soa
+- "visit window" → visit_definitions
+- "Screening visit timing" → visit_definitions
+- "procedures under safety assessment" → key_assessments
+- "what happens at Day 1?" → soa
+- "how is Day 1 defined?" → visit_definitions
+
+----------------------------------------
+
+Question:
+{question}
+
+----------------------------------------
+
+Return JSON ONLY in this format:
+
 {{
-  "route": "objectives|eligibility|soa|visit_definitions|rag",
-  "reason": "short reason",
+  "route": "objectives|eligibility|soa|visit_definitions|key_assessments|rag",
+  "reason": "one concise sentence explaining why",
   "top_k": 5
 }}
+
+Do NOT include explanations outside JSON.
 """
 )
 
@@ -66,6 +162,7 @@ def _route_question(question: str) -> Dict[str, object]:
         "eligibility",
         "soa",
         "visit_definitions",
+        "key_assessments",
         "rag",
     }:
         data["route"] = "rag"
@@ -84,12 +181,14 @@ class DocumentMultiAgent:
     def __init__(
         self,
         sections: Dict[str, str],
+        parsed_text: str,
         rag_persist_dir: str = "data/rag_index",
         use_existing_rag: bool = True,
     ) -> None:
         self.sections = sections
-        self.rag_index = build_rag_index_from_sections(
-            sections,
+        self.parsed_text = parsed_text
+        self.rag_index = build_rag_index_from_text(
+            parsed_text,
             persist_dir=rag_persist_dir,
             use_existing=use_existing_rag,
         )
@@ -125,9 +224,12 @@ class DocumentMultiAgent:
         elif route == "soa":
             target = "schedule of activities"
             output = extract_soa
-        else:
+        elif route == "visit_definitions":
             target = "visit_definitions"
             output = extract_visit_definitions
+        else:  # key_assessments
+            target = "key_assessments"
+            output = extract_key_assessments
 
         selection = self._select_sections(target, num_sections)
         answer_raw = output(selection.content)
