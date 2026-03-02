@@ -16,10 +16,34 @@ class ObjectivesByCategory(BaseModel):
     other: List[Objective] = []
 
 
+class EligibilityRule(BaseModel):
+    """A structured eligibility rule that can be evaluated against patient data."""
+    text: str = Field(
+        ...,
+        description="The original criterion text from the protocol."
+    )
+    field: Optional[str] = Field(
+        None,
+        description="The data field to evaluate (e.g., 'AGE', 'BMI', 'PCR_RESULT'). None if not machine-evaluable."
+    )
+    operator: Optional[str] = Field(
+        None,
+        description="The comparison operator (e.g., '>=', '<=', '==', 'between', 'in'). None if not machine-evaluable."
+    )
+    value: Optional[str] = Field(
+        None,
+        description="The value(s) to compare against. For ranges, use format 'min,max'. None if not machine-evaluable."
+    )
+    evaluable: bool = Field(
+        default=False,
+        description="Whether this rule can be automatically evaluated against structured data."
+    )
+
+
 class EligibilityCriteria(BaseModel):
-    """Inclusion and exclusion criteria."""
-    inclusion: List[str] = []
-    exclusion: List[str] = []
+    """Inclusion and exclusion criteria with structured rules."""
+    inclusion: List[EligibilityRule] = []
+    exclusion: List[EligibilityRule] = []
 
 class Procedure(BaseModel):
     name: str = Field(

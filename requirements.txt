@@ -13,6 +13,7 @@ langchain
 langchain-community
 langchain-core
 langchain-text-splitters
+langgraph
 
 # Hugging Face Inference API
 huggingface-hub

@@ -3,7 +3,6 @@ import pandas as pd
 import re
 from pdfplumber.utils import extract_text, get_bbox_overlap, obj_to_bbox
 from typing import List, Optional, Counter
-
 # remove the headnotes (first two lines) and footnotes (last line) from the text
 def remove_notes(text):
     lines = text.split("\n")

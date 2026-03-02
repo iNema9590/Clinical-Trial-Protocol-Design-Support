@@ -10,7 +10,6 @@ from vertexai.generative_models import GenerativeModel
 # MODEL_NAME ="microsoft/Phi-3.5-mini-instruct"
 MODEL_NAME = "gemini-2.0-flash"  # Use "gemini-2.0-flash" or "gemini-1.5-pro" for Gemini models
 
-# Check if using Gemini model
 IS_GEMINI = MODEL_NAME.startswith("gemini-")
 
 if IS_GEMINI:
