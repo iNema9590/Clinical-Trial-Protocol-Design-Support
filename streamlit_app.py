@@ -44,7 +44,6 @@ def _build_systems(file_bytes: bytes):
             sections=sections_dict,
             parsed_text=parsed_text,
             rag_persist_dir="data/rag_index",
-            use_existing_rag=True,
             patient_data_path="data/synthetic_patient_data.csv"
         )
         
@@ -186,18 +185,18 @@ if systems is not None:
                     
                     # Display routing badge
                     route_emoji = {
-                        "objectives": "🎯",
+                        "objectives and endpoints": "🎯",
                         "eligibility": "✅",
-                        "eligibility_check": "🔍",
-                        "soa": "📅",
-                        "visit_definitions": "🏥",
-                        "key_assessments": "📊",
+                        "eligibility check": "🔍",
+                        "schedule of activities": "📅",
+                        "visit definitions": "🏥",
+                        "key assessments": "📊",
                         "rag": "🔎"
                     }
                     st.caption(f"{route_emoji.get(route, '❓')} Routed to: **{route}**")
                     
-                    # Handle eligibility_check specially
-                    if route == "eligibility_check":
+                    # Handle eligibility check specially
+                    if route == "eligibility check":
                         # Display eligibility check results
                         total = response_data.get("total_patients", 0)
                         non_eligible_count = response_data.get("non_eligible_count", 0)
