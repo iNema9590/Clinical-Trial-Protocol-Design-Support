@@ -1,4 +1,4 @@
 venv
-data
 # ignore credentials
 google-credentials.json
+src/__pycache__/

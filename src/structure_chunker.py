@@ -14,11 +14,12 @@ class StructuredChunk:
 
 
 SECTION_REGEX = re.compile(
-    r'(?<=\n)(?P<number>\d+)\s{2,}(?P<title>[A-Z][A-Z\s\-()]+)(?=\n)'
+    r'(?<=\n)(?P<number>\d+)\s{2,}(?P<title>[A-Z][A-Z\s+\-()]+)(?=\n)'
 )
 
 SUBSECTION_REGEX = re.compile(
-    r'(?<=\n)(?P<number>\d+\.\d+(?:\.\d+)*)\s{2,}(?P<title>[A-Z][A-Za-z0-9\s\-():/]+)(?=\n)'
+    r'^(?P<number>\d+\.\d+(?:\.\d+)*)\s{2,}(?P<title>.+?)\s*$',
+    re.MULTILINE
 )
 
 

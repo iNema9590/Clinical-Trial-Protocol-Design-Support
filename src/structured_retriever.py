@@ -1,4 +1,5 @@
 import re
+import numpy as np
 from rank_bm25 import BM25Okapi
 from typing import List, Dict
 
@@ -42,45 +43,85 @@ class BM25StructuredRetriever:
         self.bm25 = BM25Okapi(self.corpus)
 
     # -------------------------------------------------
-    # Retrieve top-k chunks
+    # Retrieve chunks by ranking strategy
     # -------------------------------------------------
 
-    def retrieve_chunks(self, agent_name: str, top_k: int = 3):
+    def _get_ranked_indices_and_scores(self, tokenized_query: List[str]):
+        scores = self.bm25.get_scores(tokenized_query)
+        ranked_indices = sorted(
+            range(len(scores)),
+            key=lambda i: scores[i],
+            reverse=True
+        )
+        return ranked_indices, scores
+
+    def _select_indices_top_k(self, ranked_indices: List[int], scores, top_k: int) -> List[int]:
+        selected = []
+        for idx in ranked_indices:
+            if scores[idx] <= 0:
+                continue
+            selected.append(idx)
+            if len(selected) >= top_k:
+                break
+        return selected
+
+    def _select_indices_iqr(self, ranked_indices: List[int], scores) -> List[int]:
+        positive_scores = [float(scores[idx]) for idx in ranked_indices if scores[idx] > 0]
+        if not positive_scores:
+            return []
+
+        score_array = np.array(positive_scores, dtype=float)
+        q1 = np.percentile(score_array, 25)
+        q3 = np.percentile(score_array, 75)
+        iqr = q3 - q1
+
+        threshold = q3 + 1.5 * iqr if iqr > 0 else q3
+
+        selected = [idx for idx in ranked_indices if scores[idx] > 0 and scores[idx] >= threshold]
+
+        if not selected:
+            selected = [idx for idx in ranked_indices if scores[idx] > 0 and scores[idx] >= q3]
+
+        if not selected:
+            top_positive = next((idx for idx in ranked_indices if scores[idx] > 0), None)
+            if top_positive is not None:
+                selected = [top_positive]
+
+        return selected
+
+    def retrieve_chunks(self, agent_name: str, top_k: int = 3, selection_mode: str = "iqr"):
         if agent_name not in self.target_queries:
             raise ValueError(f"Agent '{agent_name}' not found in TARGET_QUERIES")
 
         query_text = self.target_queries[agent_name]
         tokenized_query = tokenize(query_text)
 
-        scores = self.bm25.get_scores(tokenized_query)
+        ranked_indices, scores = self._get_ranked_indices_and_scores(tokenized_query)
 
-        ranked_indices = sorted(
-            range(len(scores)),
-            key=lambda i: scores[i],
-            reverse=True
-        )
+        if selection_mode == "top_k":
+            selected_indices = self._select_indices_top_k(ranked_indices, scores, top_k)
+        elif selection_mode == "iqr":
+            selected_indices = self._select_indices_iqr(ranked_indices, scores)
+        else:
+            raise ValueError("selection_mode must be either 'iqr' or 'top_k'")
 
-        results = []
-        for idx in ranked_indices:
-            if scores[idx] <= 0:
-                continue
-            results.append(self.chunks[idx])
-            if len(results) >= top_k:
-                break
-
-        return results
+        return [self.chunks[idx] for idx in selected_indices]
 
     # -------------------------------------------------
     # Build combined context for agent
     # -------------------------------------------------
 
-    def retrieve_context(self, agent_name: str, top_k: int = 3) -> str:
+    def retrieve_context(self, agent_name: str, top_k: int = 3, selection_mode: str = "iqr") -> str:
         """
         Returns a single formatted context string
         to feed directly into your structured agent.
         """
 
-        retrieved_chunks = self.retrieve_chunks(agent_name, top_k)
+        retrieved_chunks = self.retrieve_chunks(
+            agent_name=agent_name,
+            top_k=top_k,
+            selection_mode=selection_mode,
+        )
 
         if not retrieved_chunks:
             return "No relevant sections found."

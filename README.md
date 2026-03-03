@@ -18,52 +18,9 @@ An intelligent multi-agent system for automated analysis of clinical trial proto
 
 ## 📋 Table of Contents
 
-- [Quick Start](#quick-start)
 - [System Architecture](#system-architecture)
-- [Installation](#installation)
 - [Usage](#usage)
 - [API Reference](#api-reference)
-- [Project Structure](#project-structure)
-- [Configuration](#configuration)
-- [Data Schema](#data-schema)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.9+
-- Google Cloud credentials for Vertex AI access
-- Virtual environment (venv or conda)
-
-### Installation
-
-```bash
-# Clone repository
-git clone <repository-url>
-cd Clinical-Trial-Protocol-Design-Support
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Ensure your Google credentials are available
-# Place google-credentials.json in the project root
-```
-
-### Running the Application
-
-```bash
-# Start the Streamlit web interface
-streamlit run streamlit_app.py
-
-# App will open at http://localhost:8501
-```
-
 ---
 
 ## 🏗️ System Architecture
@@ -136,32 +93,6 @@ pandas>=2.0.0
 pydantic>=2.0.0
 streamlit>=1.28.0
 ```
-
-### Setup Steps
-
-1. **Set Up Google Cloud Authentication**
-   ```bash
-   # Place credentials file in project root
-   export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/google-credentials.json"
-   ```
-
-2. **Create Virtual Environment**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-3. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Verify Installation**
-   ```bash
-   python3 -c "from src.multiagent import SupervisorMultiAgent; print('✓ Setup successful')"
-   ```
-
----
 
 ## 📖 Usage
 
@@ -255,39 +186,6 @@ response = supervisor.answer("validate patients against the criteria")
 
 ---
 
-## 📁 Project Structure
-
-```
-Clinical-Trial-Protocol-Design-Support/
-├── README.md                      # This file
-├── requirements.txt               # Python dependencies
-├── google-credentials.json        # GCP authentication
-├── streamlit_app.py              # Web UI entry point
-│
-├── src/                          # Core application modules
-│   ├── multiagent.py             # Supervisor + agent routing (LangGraph)
-│   ├── agents.py                 # Specialized extraction agents
-│   ├── rag.py                    # RAG pipeline with FAISS
-│   ├── llm.py                    # LLM configuration (Gemini 2.0 Flash)
-│   ├── section_classifier.py     # Document section identification
-│   ├── section_splitter.py       # Protocol text splitting
-│   ├── structure_chunker.py      # Content chunking strategy
-│   ├── structured_retriever.py   # RAG component
-│   └── schemas.py                # Pydantic response schemas
-│
-├── data/                         # Test data and models
-│   ├── synthetic_patient_data.csv        # 50 patient records (40 eligible, 10 ineligible)
-│   ├── generate_synthestic_data.py       # Patient data generation script
-│   ├── rag_index/                       
-│   │   └── index.faiss           # FAISS vector database
-│   └── [protocol PDFs]           # Test protocol documents
-│
-└── notebooks/                    # Jupyter notebooks
-    └── pregresschecker.ipynb     # Testing & validation
-```
-
----
-
 ## ⚙️ Configuration
 
 ### Environment Variables
@@ -314,125 +212,12 @@ Edit [src/rag.py](src/rag.py) to adjust:
 
 ---
 
-## 📊 Data Schema
-
-### Patient Dataset (CSV)
-
-The eligibility checking system validates patients against 25 CSV fields:
-
-**Demographics:**
-- `PATIENT_ID`, `AGE`, `BMI`
-
-**Laboratory Values:**
-- `ALT` (liver enzyme), `ULN` (upper limit normal)
-
-**Test Results:**
-- `PCR_RESULT` (Positive/Negative)
-
-**Evaluable Criteria Flags (Boolean/Categorical):**
-- `SEVERE_ALLERGY_HISTORY` (True/False)
-- `IMMUNOSUPPRESSIVE_THERAPY_6M` (True/False)
-- `PREGNANT` (True/False)
-- `BODY_TEMPERATURE` (numeric, ≤37.5°C normal)
-- `RECENT_VACCINE_30D`, `RECENT_BLOOD_DONATION_30D` (True/False)
-- `SARS_COV2_RISK_LEVEL` (Low/High)
-- `MEDICAL_STABILITY_STATUS` (Stable/Unstable)
-- `COGNITIVE_COMPLIANCE_CAPABLE` (True/False)
-- `USING_CONTRACEPTION` (True/False)
-- `CONSENTED` (True/False)
-- `GUILLAIN_BARRE_HISTORY`, `IMMUNODEFICIENCY_CONDITION` (True/False)
-- `MALIGNANCY_HISTORY`, `BLEEDING_DISORDER_HISTORY` (True/False)
-- `SEVERE_COMORBIDITY` (True/False)
-- `INVESTIGATIONAL_SARS_COV2_DRUG` (True/False)
-- `RECENT_IMMUNOGLOBULIN_3M` (True/False)
-- `STUDY_STAFF_INVOLVEMENT` (True/False)
-
-### Extraction Schemas
-
-**EligibilityCriteria**
-```python
-{
-  "evaluable_criteria": [
-    {
-      "criterion": "Positive PCR test result",
-      "field_name": "PCR_RESULT",
-      "operator": "==",
-      "values": ["Positive"],
-      "criterion_type": "exclusion"
-    }
-  ],
-  "non_evaluable_criteria": [
-    {
-      "criterion": "No known contraindications",
-      "reason": "Not machine-evaluable; requires medical judgment"
-    }
-  ]
-}
-```
-
-**EligibilityCheckResult**
-```python
-{
-  "total_patients": 50,
-  "eligible_count": 40,
-  "non_eligible_count": 10,
-  "evaluated_rules": [
-    {
-      "rule": "PCR_RESULT == Negative",
-      "evaluation_type": "evaluable"
-    }
-  ],
-  "unevaluated_criteria": [
-    {
-      "criterion": "No known contraindications",
-      "reason": "Not machine-evaluable"
-    }
-  ],
-  "non_eligible_patients": [
-    {
-      "patient_id": "41",
-      "violations": [
-        {
-          "field": "PCR_RESULT",
-          "actual_value": "Positive",
-          "rule": "PCR_RESULT == Negative"
-        }
-      ],
-      "record": {...}
-    }
-  ]
-}
-```
-
----
-
-## 🔧 Troubleshooting
-
-### Issue: `google.api_core.exceptions.AuthenticationError`
-**Solution:** Ensure `GOOGLE_APPLICATION_CREDENTIALS` is set and points to valid credentials file.
-
-### Issue: FAISS Index Not Found
-**Solution:** Run protocol extraction once to initialize RAG index automatically.
-
-### Issue: Supervisor Always Routes to RAG
-**Solution:** The supervisor uses keyword matching with LLM fallback. Ensure query contains relevant keywords (see routing table).
-
-### Issue: Patient Eligibility Check Returns Empty
-**Solution:** 
-1. First extract eligibility criteria with: "What are the inclusion and exclusion criteria?"
-2. Then validate patients with: "Check patients against these criteria"
-
-### Issue: Memory Issues with Large PDFs
-**Solution:** Adjust chunk size in [src/structure_chunker.py](src/structure_chunker.py) or switch to `faiss-gpu` for vector operations.
-
----
-
 ## 📚 Example Queries
 
 The system understands natural language queries across multiple domains:
 
 ```
-# Objectives
+# Objectives and Endpoints
 "What are the study objectives?"
 "What endpoints will be measured?"
 "What are the goals of this trial?"
@@ -521,24 +306,3 @@ def _evaluate_rule(self, field_name, operator, values, data):
 No hardcoded field lists—system adapts to any dataset schema.
 
 ---
-
-## 🤝 Contributing
-
-To add new agents or routes:
-
-1. **Create extraction function** in [src/agents.py](src/agents.py)
-2. **Define Pydantic schema** in [src/schemas.py](src/schemas.py)
-3. **Add agent node** to `DocumentMultiAgentCore` in [src/multiagent.py](src/multiagent.py)
-4. **Update supervisor routing** with new keyword triggers
-
----
-
-## 📄 License
-
-[Add your license here]
-
----
-
-## 📧 Support
-
-For issues or questions, please open a GitHub issue or contact the development team.

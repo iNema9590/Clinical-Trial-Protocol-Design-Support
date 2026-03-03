@@ -51,14 +51,14 @@ TARGET_QUERIES = {
     screening visit treatment visit follow-up visit
     study day visit window
     """,
-    "visit_definitions": """
+    "visit definitions": """
     visit definitions visit schedule description
     screening visit day 1 day 29 follow-up visit
     illness visit safety follow-up early termination visit
     visit window timing of visits study flow
     conditional visits triggered visits
     """,
-    "key_assessments": """
+    "key assessments": """
     assessments procedures evaluations key assessments
     clinical assessments laboratory tests physical examination
     vital signs ECG imaging blood samples

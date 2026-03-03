@@ -33,12 +33,12 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add]
     query: str
     route: Literal[
-        "objectives",
+        "objectives and endpoints",
         "eligibility",
-        "eligibility_check",
-        "soa",
-        "visit_definitions",
-        "key_assessments",
+        "eligibility check",
+        "schedule of activities",
+        "visit definitions",
+        "key assessments",
         "rag",
     ]
     routing_info: dict
@@ -60,7 +60,7 @@ If the question does not clearly match a specialized extraction tool, choose "ra
 TOOL DEFINITIONS
 ----------------------------------------
 
-1) objectives
+1) objectives and endpoints
 Use ONLY when the question is about:
 - Study objectives (primary, secondary, exploratory)
 - Endpoints linked to objectives
@@ -81,7 +81,7 @@ Use ONLY when the question is about:
 
 ----------------------------------------
 
-2b) eligibility_check
+2b) eligibility check
 Use ONLY when the question is about:
 - Validating patient dataset against eligibility criteria
 - Eligibility compliance check
@@ -90,7 +90,7 @@ Use ONLY when the question is about:
 
 ----------------------------------------
 
-3) soa
+3) schedule of activities
 Use ONLY when the question is about:
 - Schedule of Activities tables
 - Procedures organized by visit
@@ -103,23 +103,18 @@ NOT about describing visits.
 
 ----------------------------------------
 
-4) visit_definitions
+4) visit definitions
 Use ONLY when the question is about:
 - Listing the visit definitions
 - structured output of visit definitions
 
 ----------------------------------------
 
-5) key_assessments
+5) key assessments
 Use ONLY when the question is about:
 - Assessments (e.g., Safety Assessment, Tumor Assessment)
 - Procedures grouped under assessments
 - Evaluations and measurements
-
-Important:
-This is about assessment → procedure hierarchy.
-NOT about objectives.
-NOT about visit schedules.
 
 ----------------------------------------
 
@@ -135,23 +130,61 @@ Use when:
 DISAMBIGUATION RULES
 ----------------------------------------
 
-If the question mentions:
+ROUTING GUIDE BY KEYWORDS:
 
-- "primary objective" → objectives
-- "endpoint" → objectives
-- "inclusion/exclusion" → eligibility
-- "data validation for eligibility" → eligibility_check
-- "do data validation for eligigbility check" → eligibility_check
-- "eligibility compliance check" → eligibility_check
-- "non-eligible patients" → eligibility_check
-- "schedule of activities" → soa
-- "visit window" → visit_definitions
-- "Screening visit timing" → visit_definitions
-- "procedures under safety assessment" → key_assessments
-- "what happens at Day 1?" → soa
-- "how is Day 1 defined?" → visit_definitions
+**OBJECTIVES AND ENDPOINTS (if query contains):**
+- "objective" OR "objectives" (primary/secondary/exploratory)
+- "endpoint" OR "endpoints"
+- "goal" + "study"
+- "aim" + "study"
 
-When unsure → choose "rag".
+**ELIGIBILITY (if query contains):**
+- "inclusion" OR "exclusion" 
+- "eligible" OR "eligibility"
+- "participant selection"
+- "criteria" (but NOT "eligibility check")
+
+**ELIGIBILITY CHECK (if query contains):**
+- "validation" + "eligibility"
+- "validate" + "patient" OR "patients"
+- "check" + "patient" OR "patients"
+- "compliance" + "eligibility"
+- "non-eligible" OR "ineligible"
+- "meet eligibility requirement"
+
+**SCHEDULE OF ACTIVITIES / SOA (if query contains):**
+- "schedule of activities"
+- "procedures" + ("at" OR "during") + visit/day
+- "what happens" (at visit/day/week)
+- "what is done" (at visit/day/week)
+- "procedures" + ("visit" OR "day" OR "week")
+- "procedure matrix"
+
+**VISIT DEFINITIONS (if query contains):**
+- "visit definition" OR "visit definitions"
+- "how is" + visit mentioned
+- "when is" + visit mentioned
+- "visit" + ("window" OR "timing" OR "duration")
+- "screening" + ("window" OR "period" OR "defined")
+- "baseline" + ("timing" OR "window")
+- "final visit"
+
+**KEY ASSESSMENTS (if query contains):**
+- "assessment" OR "assessments"
+- "procedure" + "safety" OR "efficacy"
+- "what is assessed"
+- "what is measured"
+- "evaluation"
+- "efficacy assessment"
+- "safety assessment"
+
+**RAG/FALLBACK (if unsure or):**
+- Question spans multiple domains
+- Request for summary/overview
+- General protocol questions
+- Does not match above patterns
+
+When query matches multiple categories, pick the most specific one.
 
 ----------------------------------------
 
@@ -163,7 +196,7 @@ Question:
 Return JSON ONLY in this format:
 
 {{
-    "route": "objectives|eligibility|eligibility_check|soa|visit_definitions|key_assessments|rag",
+    "route": "objectives and endpoints|eligibility|eligibility check|schedule of activities|visit definitions|key assessments|rag",
   "reason": "one concise sentence explaining why"
 }}
 
@@ -212,29 +245,13 @@ def _parse_router_output(raw: str) -> dict[str, Any]:
 # AGENT CONFIGURATION
 # ============================================================================
 
-AGENT_CONFIG = {
-    "objectives": {
-        "target": "objectives and endpoints",
-        "function": extract_objectives,
-    },
-    "eligibility": {
-        "target": "eligibility",
-        "function": extract_eligibility,
-    },
-    "soa": {
-        "target": "schedule of activities",
-        "function": extract_soa,
-    },
-    "visit_definitions": {
-        "target": "visit_definitions",
-        "function": extract_visit_definitions,
-    },
-    "key_assessments": {
-        "target": "key_assessments",
-        "function": extract_key_assessments,
-    },
+FUNCTIONS = {
+    "objectives and endpoints":extract_objectives,
+    "eligibility": extract_eligibility,
+    "schedule of activities":extract_soa,
+    "visit definitions": extract_visit_definitions,
+    "key assessments": extract_key_assessments
 }
-
 
 # ============================================================================
 # AGENTS WRAPPED AS TOOLS
@@ -253,9 +270,8 @@ class DocumentMultiAgentCore:
         self,
         sections: dict[str, str],
         parsed_text: str,
-        rag_persist_dir: str = "data/rag_index",
-        use_existing_rag: bool = True,
-        patient_data_path: str = "data/synthetic_patient_data.csv",
+        rag_persist_dir: str = "../data/rag_index",
+        patient_data_path: str = "../data/synthetic_patient_data.csv",
     ) -> None:
         self.sections = sections
         self.parsed_text = parsed_text
@@ -265,8 +281,7 @@ class DocumentMultiAgentCore:
     def _resolve_patient_data_path(self) -> str:
         candidates = [
             self.patient_data_path,
-            "data/synthetic_patient_data.csv",
-            "synthetic_patient_data.csv",
+            "../data/synthetic_patient_data.csv",
         ]
         for path in candidates:
             if path and os.path.exists(path):
@@ -508,7 +523,7 @@ class DocumentMultiAgentCore:
                 })
 
         return {
-            "source": "eligibility_check",
+            "source": "eligibility check",
             "dataset_path": dataset_path,
             "total_patients": int(len(df)),
             "non_eligible_count": int(len(non_eligible)),
@@ -555,24 +570,22 @@ class DocumentMultiAgentCore:
         Unified agent extraction method.
         
         Args:
-            agent_name: One of "objectives", "eligibility", "soa", "visit_definitions", "key_assessments"
+            agent_name: One of "objectives", "eligibility", "schedule of activities", "visit definitions", "key assessments"
             num_sections: Number of top sections to retrieve
         
         Returns:
             Dict with source and answer keys
         """
-        if agent_name not in AGENT_CONFIG:
+        if agent_name not in FUNCTIONS:
             raise ValueError(
                 f"Unknown agent: {agent_name}. "
-                f"Must be one of {list(AGENT_CONFIG.keys())}"
+                f"Must be one of {list(FUNCTIONS.keys())}"
             )
         
-        config = AGENT_CONFIG[agent_name]
-        target = config["target"]
-        extraction_func = config["function"]
+        extraction_func = FUNCTIONS[agent_name]
         
         # Get top relevant sections
-        selection = self._select_sections(target, num_sections=num_sections)
+        selection = self._select_sections(agent_name, num_sections=num_sections)
         
         # Run extraction
         answer_raw = extraction_func(selection.content)
@@ -586,7 +599,7 @@ class DocumentMultiAgentCore:
     
     def extract_objectives_agent(self, query: str) -> dict[str, Any]:
         """Extract study objectives and endpoints."""
-        return self.run_extraction("objectives", num_sections=3)
+        return self.run_extraction("objectives and endpoints", num_sections=3)
     
     def extract_eligibility_agent(self, query: str) -> dict[str, Any]:
         """Extract inclusion and exclusion criteria."""
@@ -594,15 +607,15 @@ class DocumentMultiAgentCore:
     
     def extract_soa_agent(self, query: str) -> dict[str, Any]:
         """Extract Schedule of Activities."""
-        return self.run_extraction("soa", num_sections=3)
+        return self.run_extraction("schedule of activities", num_sections=3)
     
     def extract_visit_definitions_agent(self, query: str) -> dict[str, Any]:
         """Extract visit definitions and timing."""
-        return self.run_extraction("visit_definitions", num_sections=3)
+        return self.run_extraction("visit definitions", num_sections=3)
     
     def extract_key_assessments_agent(self, query: str) -> dict[str, Any]:
         """Extract key assessments and procedures."""
-        return self.run_extraction("key_assessments", num_sections=3)
+        return self.run_extraction("key assessments", num_sections=3)
     
     def rag_agent(self, query: str, top_k: int = 5) -> dict[str, Any]:
         """Use RAG to answer the query."""
@@ -627,14 +640,12 @@ class SupervisorMultiAgent:
         sections: dict[str, str],
         parsed_text: str,
         rag_persist_dir: str = "../data/rag_index",
-        use_existing_rag: bool = True,
         patient_data_path: str = "../data/synthetic_patient_data.csv",
     ):
         self.core = DocumentMultiAgentCore(
             sections=sections,
             parsed_text=parsed_text,
             rag_persist_dir=rag_persist_dir,
-            use_existing_rag=use_existing_rag,
             patient_data_path=patient_data_path,
         )
         self.graph = self._build_graph()
@@ -647,12 +658,12 @@ class SupervisorMultiAgent:
         workflow.add_node("supervisor", self._supervisor_node)
         
         # Add agent nodes
-        workflow.add_node("objectives", self._objectives_node)
+        workflow.add_node("objectives and endpoints", self._objectives_node)
         workflow.add_node("eligibility", self._eligibility_node)
-        workflow.add_node("eligibility_check", self._eligibility_check_node)
-        workflow.add_node("soa", self._soa_node)
-        workflow.add_node("visit_definitions", self._visit_definitions_node)
-        workflow.add_node("key_assessments", self._key_assessments_node)
+        workflow.add_node("eligibility check", self._eligibility_check_node)
+        workflow.add_node("schedule of activities", self._soa_node)
+        workflow.add_node("visit definitions", self._visit_definitions_node)
+        workflow.add_node("key assessments", self._key_assessments_node)
         workflow.add_node("rag", self._rag_node)
         
         # Add final node
@@ -666,23 +677,23 @@ class SupervisorMultiAgent:
             "supervisor",
             self._route_supervisor,
             {
-                "objectives": "objectives",
+                "objectives and endpoints": "objectives and endpoints",
                 "eligibility": "eligibility",
-                "eligibility_check": "eligibility_check",
-                "soa": "soa",
-                "visit_definitions": "visit_definitions",
-                "key_assessments": "key_assessments",
+                "eligibility check": "eligibility check",
+                "schedule of activities": "schedule of activities",
+                "visit definitions": "visit definitions",
+                "key assessments": "key assessments",
                 "rag": "rag",
             }
         )
         
         # All agent nodes go to final
-        workflow.add_edge("objectives", "final")
+        workflow.add_edge("objectives and endpoints", "final")
         workflow.add_edge("eligibility", "final")
-        workflow.add_edge("eligibility_check", "final")
-        workflow.add_edge("soa", "final")
-        workflow.add_edge("visit_definitions", "final")
-        workflow.add_edge("key_assessments", "final")
+        workflow.add_edge("eligibility check", "final")
+        workflow.add_edge("schedule of activities", "final")
+        workflow.add_edge("visit definitions", "final")
+        workflow.add_edge("key assessments", "final")
         workflow.add_edge("rag", "final")
         
         # Final node ends
@@ -701,10 +712,10 @@ class SupervisorMultiAgent:
             and "check" in normalized_query
         ):
             routing_data = {
-                "route": "eligibility_check",
+                "route": "eligibility check",
                 "reason": "Detected explicit eligibility validation/compliance request.",
             }
-            route = "eligibility_check"
+            route = "eligibility check"
             routing_msg = AIMessage(content=f"Routing to: {route}")
             return {
                 **state,
@@ -715,7 +726,7 @@ class SupervisorMultiAgent:
         
         # Get routing decision
         prompt = SUPERVISOR_PROMPT.format(question=query)
-        raw = generate(prompt, temperature=1.0)
+        raw = generate(prompt, temperature=0.0)
 
         routing_data = _parse_router_output(raw)
         if not routing_data:
@@ -727,12 +738,12 @@ class SupervisorMultiAgent:
 
         route = str(routing_data.get("route", "rag")).strip().lower()
         if route not in [
-            "objectives",
+            "objectives and endpoints",
             "eligibility",
-            "eligibility_check",
-            "soa",
-            "visit_definitions",
-            "key_assessments",
+            "eligibility check",
+            "schedule of activities",
+            "visit definitions",
+            "key assessments",
             "rag",
         ]:
             route = "rag"
@@ -873,14 +884,12 @@ class DocumentMultiAgent:
         sections: dict[str, str],
         parsed_text: str,
         rag_persist_dir: str = "../data/rag_index",
-        use_existing_rag: bool = True,
         patient_data_path: str = "../data/synthetic_patient_data.csv",
     ):
         self.supervisor = SupervisorMultiAgent(
             sections=sections,
             parsed_text=parsed_text,
             rag_persist_dir=rag_persist_dir,
-            use_existing_rag=use_existing_rag,
             patient_data_path=patient_data_path,
         )
     
