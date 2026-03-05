@@ -3,7 +3,7 @@ import ast
 import os
 import re
 import torch
-from typing import Annotated, Literal, TypedDict, Any
+from typing import Annotated, Literal, TypedDict, Any, Optional
 from dataclasses import dataclass
 import pandas as pd
 
@@ -22,6 +22,8 @@ from agents import (
 from llm import generate
 from rag import ClinicalProtocolRAG
 from section_classifier import TARGET_QUERIES, embed
+from structure_chunker import build_structured_chunks
+from structured_retriever import BM25StructuredRetriever
 
 
 # ============================================================================
@@ -32,6 +34,7 @@ class AgentState(TypedDict):
     """State passed through the supervisor agent graph."""
     messages: Annotated[list[BaseMessage], add]
     query: str
+    conversation_history: list[dict[str, str]]
     route: Literal[
         "objectives and endpoints",
         "eligibility",
@@ -188,6 +191,11 @@ When query matches multiple categories, pick the most specific one.
 
 ----------------------------------------
 
+Conversation history (may be empty):
+{conversation_history}
+
+----------------------------------------
+
 Question:
 {question}
 
@@ -277,6 +285,10 @@ class DocumentMultiAgentCore:
         self.parsed_text = parsed_text
         self.rag_index = ClinicalProtocolRAG(parsed_text)
         self.patient_data_path = patient_data_path
+        
+        # Build chunks and BM25 retriever for extraction agents
+        self.chunks = build_structured_chunks(parsed_text)
+        self.bm25_retriever = BM25StructuredRetriever(self.chunks, TARGET_QUERIES)
 
     def _resolve_patient_data_path(self) -> str:
         candidates = [
@@ -535,25 +547,24 @@ class DocumentMultiAgentCore:
         }
     
     def _select_sections(self, target: str, num_sections: int = 3) -> SelectionResult:
-        """Select most relevant sections based on target query."""
-        section_titles = list(self.sections.keys())
-        section_embeddings = embed(section_titles)
-        
-        query_embedding = embed([TARGET_QUERIES[target]])[0]
-        scores = torch.matmul(section_embeddings, query_embedding)
-        
-        top_scores, top_indices = torch.topk(
-            scores, k=min(num_sections, len(section_titles))
+        """Select most relevant sections based on BM25 retrieval."""
+        # Use BM25 retriever to get context string
+        context = self.bm25_retriever.retrieve_context(
+            agent_name=target,
+            top_k=num_sections,
+            selection_mode="iqr"
         )
         
-        selections = []
-        for score, idx in zip(top_scores.tolist(), top_indices.tolist()):
-            selections.append((section_titles[idx], float(score)))
-        
-        combined_content = "\n\n".join(
-            [self.sections[title] for title, _ in selections]
+        # Extract chunk info for selections tracking
+        retrieved_chunks = self.bm25_retriever.retrieve_chunks(
+            agent_name=target,
+            top_k=num_sections,
+            selection_mode="iqr"
         )
-        return SelectionResult(sections=selections, content=combined_content)
+        
+        selections = [(chunk.full_title, 1.0) for chunk in retrieved_chunks]
+        
+        return SelectionResult(sections=selections, content=context)
     
     def _serialize_response(self, obj: Any) -> Any:
         """Convert Pydantic models to dicts."""
@@ -617,10 +628,19 @@ class DocumentMultiAgentCore:
         """Extract key assessments and procedures."""
         return self.run_extraction("key assessments", num_sections=3)
     
-    def rag_agent(self, query: str, top_k: int = 5) -> dict[str, Any]:
+    def rag_agent(
+        self,
+        query: str,
+        top_k: int = 5,
+        conversation_history: Optional[list[dict[str, str]]] = None,
+    ) -> dict[str, Any]:
         """Use RAG to answer the query."""
         docs = self.rag_index.retrieve(query, k=top_k)
-        answer = self.rag_index.answer(query, k=top_k)
+        answer = self.rag_index.answer(
+            query,
+            k=top_k,
+            conversation_history=conversation_history,
+        )
         return {
             "source": "rag",
             "answer": answer,
@@ -704,6 +724,7 @@ class SupervisorMultiAgent:
     def _supervisor_node(self, state: AgentState) -> AgentState:
         """Supervisor node: route query to appropriate agent."""
         query = state["query"]
+        conversation_history = state.get("conversation_history", [])
 
         normalized_query = query.lower()
         if (
@@ -725,7 +746,18 @@ class SupervisorMultiAgent:
             }
         
         # Get routing decision
-        prompt = SUPERVISOR_PROMPT.format(question=query)
+        history_lines = []
+        for msg in conversation_history[-8:]:
+            role = str(msg.get("role", "unknown")).capitalize()
+            content = str(msg.get("content", "")).strip()
+            if content:
+                history_lines.append(f"{role}: {content}")
+        history_str = "\n".join(history_lines) if history_lines else "None"
+
+        prompt = SUPERVISOR_PROMPT.format(
+            question=query,
+            conversation_history=history_str,
+        )
         raw = generate(prompt, temperature=0.0)
 
         routing_data = _parse_router_output(raw)
@@ -819,7 +851,10 @@ class SupervisorMultiAgent:
     
     def _rag_node(self, state: AgentState) -> AgentState:
         """Execute RAG query."""
-        result = self.core.rag_agent(state["query"])
+        result = self.core.rag_agent(
+            state["query"],
+            conversation_history=state.get("conversation_history", []),
+        )
         msg = AIMessage(content=json.dumps(result))
         return {
             **state,
@@ -830,11 +865,16 @@ class SupervisorMultiAgent:
         """Final node: format output."""
         return state
     
-    def answer(self, question: str) -> str:
+    def answer(
+        self,
+        question: str,
+        conversation_history: Optional[list[dict[str, str]]] = None,
+    ) -> str:
         """Process a question through the supervisor agent."""
         initial_state: AgentState = {
             "messages": [HumanMessage(content=question)],
             "query": question,
+            "conversation_history": conversation_history or [],
             "route": "rag",
             "routing_info": {},
         }
@@ -858,11 +898,16 @@ class SupervisorMultiAgent:
         
         return json.dumps(result, ensure_ascii=True)
     
-    async def astreaming_answer(self, question: str):
+    async def astreaming_answer(
+        self,
+        question: str,
+        conversation_history: Optional[list[dict[str, str]]] = None,
+    ):
         """Stream the supervisor agent's respsonse."""
         initial_state: AgentState = {
             "messages": [HumanMessage(content=question)],
             "query": question,
+            "conversation_history": conversation_history or [],
             "route": "rag",
             "routing_info": {},
         }
@@ -871,28 +916,3 @@ class SupervisorMultiAgent:
         async for event in self.graph.astream_events(initial_state, version="v2"):
             yield event
 
-
-# ============================================================================
-# BACKWARD COMPATIBILITY
-# ============================================================================
-
-class DocumentMultiAgent:
-    """Backward compatible wrapper for the new supervisor agent."""
-    
-    def __init__(
-        self,
-        sections: dict[str, str],
-        parsed_text: str,
-        rag_persist_dir: str = "../data/rag_index",
-        patient_data_path: str = "../data/synthetic_patient_data.csv",
-    ):
-        self.supervisor = SupervisorMultiAgent(
-            sections=sections,
-            parsed_text=parsed_text,
-            rag_persist_dir=rag_persist_dir,
-            patient_data_path=patient_data_path,
-        )
-    
-    def answer(self, question: str) -> str:
-        """Process a question through the supervisor agent."""
-        return self.supervisor.answer(question)

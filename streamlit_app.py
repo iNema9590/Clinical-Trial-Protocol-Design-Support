@@ -66,6 +66,20 @@ def _get_systems(file_bytes: Optional[bytes]):
     return _build_systems(file_bytes)
 
 
+def _build_conversation_history(
+    messages: list[dict],
+    max_turn_messages: int = 10,
+) -> list[dict[str, str]]:
+    """Build a compact role/content history for memory-aware answering."""
+    history: list[dict[str, str]] = []
+    for msg in messages[-max_turn_messages:]:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            history.append({"role": role, "content": content})
+    return history
+
+
 with st.sidebar:
     st.header("📄 Document")
     uploaded_file = st.file_uploader("Upload protocol PDF", type=["pdf"])
@@ -177,8 +191,16 @@ if systems is not None:
 
         with st.chat_message("assistant"):
             with st.spinner("🤔 Processing your question..."):
+                conversation_history = _build_conversation_history(
+                    st.session_state.messages,
+                    max_turn_messages=10,
+                )
+
                 # Use multiagent system
-                response_json = systems["multiagent"].answer(user_input)
+                response_json = systems["multiagent"].answer(
+                    user_input,
+                    conversation_history=conversation_history,
+                )
                 try:
                     response_data = json.loads(response_json)
                     route = response_data.get("route", "unknown")
